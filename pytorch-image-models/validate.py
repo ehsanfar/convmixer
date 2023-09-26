@@ -146,6 +146,10 @@ def validate(args):
         assert hasattr(model, 'num_classes'), 'Model must have `num_classes` attr if not set on cmd line/config.'
         args.num_classes = model.num_classes
 
+    ## Change the number of output classes
+    model = torch.nn.Sequential(*(list(model.children())[:-1]))
+    model.fc = torch.nn.Linear(in_features=1536, out_features=8, bias=True)
+
     if args.checkpoint:
         load_checkpoint(model, args.checkpoint, args.use_ema)
 

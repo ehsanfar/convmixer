@@ -378,8 +378,10 @@ def main():
         bn_eps=args.bn_eps,
         scriptable=args.torchscript,
         checkpoint_path=args.initial_checkpoint)
-    # print("model:", model)
-    model.fc = nn.Linear(1000, 8, bias=True)
+    print("model:", model)
+    model = torch.nn.Sequential(*(list(model.children())[:-1]))
+    model.fc = torch.nn.Linear(in_features=1536, out_features=8, bias=True)
+    print(model)
     # print(model.fc)
     # print(model.classifier[25])
     # model.classifier[25].out_features = 10
