@@ -27,6 +27,8 @@ import torch
 import torch.nn as nn
 import torchvision.utils
 from torch.nn.parallel import DistributedDataParallel as NativeDDP
+# from torchsummary import summary
+
 
 from timm.data import create_dataset, create_loader, resolve_data_config, Mixup, FastCollateMixup, AugMixDataset
 from timm.models import create_model, safe_model_name, resume_checkpoint, load_checkpoint,\
@@ -89,7 +91,7 @@ parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='Resume full model and optimizer state from checkpoint (default: none)')
 parser.add_argument('--no-resume-opt', action='store_true', default=False,
                     help='prevent resume of optimizer state when resuming model')
-parser.add_argument('--num-classes', type=int, default=None, metavar='N',
+parser.add_argument('--num-classes', type=int, default=8, metavar='N',
                     help='number of label classes (Model default if None)')
 parser.add_argument('--gp', default=None, type=str, metavar='POOL',
                     help='Global pool type, one of (fast, avg, max, avgmax, avgmaxc). Model default if None.')
@@ -150,13 +152,13 @@ parser.add_argument('--warmup-lr', type=float, default=0.0001, metavar='LR',
                     help='warmup learning rate (default: 0.0001)')
 parser.add_argument('--min-lr', type=float, default=1e-6, metavar='LR',
                     help='lower lr bound for cyclic schedulers that hit 0 (1e-5)')
-parser.add_argument('--epochs', type=int, default=300, metavar='N',
+parser.add_argument('--epochs', type=int, default=5, metavar='N',
                     help='number of epochs to train (default: 300)')
 parser.add_argument('--epoch-repeats', type=float, default=0., metavar='N',
                     help='epoch repeat multiplier (number of times to repeat dataset epoch per train epoch).')
 parser.add_argument('--start-epoch', default=None, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
-parser.add_argument('--decay-epochs', type=float, default=100, metavar='N',
+parser.add_argument('--decay-epochs', type=float, default=3, metavar='N',
                     help='epoch interval to decay LR')
 parser.add_argument('--warmup-epochs', type=int, default=3, metavar='N',
                     help='epochs to warmup LR, if scheduler supports')
@@ -170,15 +172,15 @@ parser.add_argument('--decay-rate', '--dr', type=float, default=0.1, metavar='RA
 # Augmentation & regularization parameters
 parser.add_argument('--no-aug', action='store_true', default=False,
                     help='Disable all training augmentation, override other train aug args')
-parser.add_argument('--scale', type=float, nargs='+', default=[0.08, 1.0], metavar='PCT',
-                    help='Random resize scale (default: 0.08 1.0)')
-parser.add_argument('--ratio', type=float, nargs='+', default=[3./4., 4./3.], metavar='RATIO',
+parser.add_argument('--scale', type=float, nargs='+', default=[1, 1], metavar='PCT',
+                    help='Random resize scale (default: 1 1.0)')
+parser.add_argument('--ratio', type=float, nargs='+', default=[1, 1], metavar='RATIO',
                     help='Random resize aspect ratio (default: 0.75 1.33)')
-parser.add_argument('--hflip', type=float, default=0.5,
+parser.add_argument('--hflip', type=float, default=0.,
                     help='Horizontal flip training aug probability')
 parser.add_argument('--vflip', type=float, default=0.,
                     help='Vertical flip training aug probability')
-parser.add_argument('--color-jitter', type=float, default=0.4, metavar='PCT',
+parser.add_argument('--color-jitter', type=float, default=0., metavar='PCT',
                     help='Color jitter factor (default: 0.4)')
 parser.add_argument('--aa', type=str, default=None, metavar='NAME',
                     help='Use AutoAugment policy. "v0" or "original". (default: None)'),
@@ -206,15 +208,15 @@ parser.add_argument('--cutmix', type=float, default=0.0,
                     help='cutmix alpha, cutmix enabled if > 0. (default: 0.)')
 parser.add_argument('--cutmix-minmax', type=float, nargs='+', default=None,
                     help='cutmix min/max ratio, overrides alpha and enables cutmix if set (default: None)')
-parser.add_argument('--mixup-prob', type=float, default=1.0,
+parser.add_argument('--mixup-prob', type=float, default=0,
                     help='Probability of performing mixup or cutmix when either/both is enabled')
-parser.add_argument('--mixup-switch-prob', type=float, default=0.5,
+parser.add_argument('--mixup-switch-prob', type=float, default=0.,
                     help='Probability of switching to cutmix when both mixup and cutmix enabled')
 parser.add_argument('--mixup-mode', type=str, default='batch',
                     help='How to apply mixup/cutmix params. Per "batch", "pair", or "elem"')
 parser.add_argument('--mixup-off-epoch', default=0, type=int, metavar='N',
                     help='Turn off mixup after this epoch, disabled if 0 (default: 0)')
-parser.add_argument('--smoothing', type=float, default=0.1,
+parser.add_argument('--smoothing', type=float, default=0.,
                     help='Label smoothing (default: 0.1)')
 parser.add_argument('--train-interpolation', type=str, default='random',
                     help='Training interpolation (random, bilinear, bicubic default: "random")')
@@ -359,6 +361,8 @@ def main():
                         "Install NVIDA apex or upgrade to PyTorch 1.6")
 
     random_seed(args.seed, args.rank)
+    print("args.pretrained:", args.pretrained)
+    print("number of classes:", args.num_classes)
 
     model = create_model(
         args.model,
@@ -374,6 +378,13 @@ def main():
         bn_eps=args.bn_eps,
         scriptable=args.torchscript,
         checkpoint_path=args.initial_checkpoint)
+    # print("model:", model)
+    model.fc = nn.Linear(1000, 8, bias=True)
+    # print(model.fc)
+    # print(model.classifier[25])
+    # model.classifier[25].out_features = 10
+
+    # print("model:", model)
     if args.num_classes is None:
         assert hasattr(model, 'num_classes'), 'Model must have `num_classes` attr if not set on cmd line/config.'
         args.num_classes = model.num_classes  # FIXME handle model default vs config num_classes more elegantly
@@ -483,6 +494,8 @@ def main():
         _logger.info('Scheduled epochs: {}'.format(num_epochs))
 
     # create the train and eval datasets
+    print("args.dataset:", args.dataset)
+    print("args.data_dir:", args.data_dir)
     dataset_train = create_dataset(
         args.dataset,
         root=args.data_dir, split=args.train_split, is_training=True,
@@ -682,6 +695,7 @@ def train_one_epoch(
 
         with amp_autocast():
             output = model(input)
+            # print(output.shape, target.shape)
             loss = loss_fn(output, target)
 
         if not args.distributed:
