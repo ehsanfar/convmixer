@@ -28,9 +28,12 @@ import torch.nn as nn
 import torchvision.utils
 from torch.nn.parallel import DistributedDataParallel as NativeDDP
 # from torchsummary import summary
-
+import cv2
+import re
+from torch.utils.data import Dataset, DataLoader
 
 from timm.data import create_dataset, create_loader, resolve_data_config, Mixup, FastCollateMixup, AugMixDataset
+from timm.data import ImageDataset, IterableImageDataset, AugMixDataset, create_loader
 from timm.models import create_model, safe_model_name, resume_checkpoint, load_checkpoint,\
     convert_splitbn_model, model_parameters
 from timm.utils import *
@@ -38,6 +41,8 @@ from timm.loss import *
 from timm.optim import create_optimizer_v2, optimizer_kwargs
 from timm.scheduler import create_scheduler
 from timm.utils import ApexScaler, NativeScaler
+
+from utils.help import LandmarkDataset, create_dataset_historical
 
 try:
     from apex import amp
@@ -53,12 +58,18 @@ try:
         has_native_amp = True
 except AttributeError:
     pass
-
 try:
     import wandb
     has_wandb = True
 except ImportError: 
     has_wandb = False
+
+
+
+
+
+
+    
 
 torch.backends.cudnn.benchmark = True
 _logger = logging.getLogger('train')
@@ -73,14 +84,14 @@ parser.add_argument('-c', '--config', default='', type=str, metavar='FILE',
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
 
 # Dataset / Model parameters
-parser.add_argument('data_dir', metavar='DIR',
-                    help='path to dataset')
-parser.add_argument('--dataset', '-d', metavar='NAME', default='',
-                    help='dataset type (default: ImageFolder/ImageTar if empty)')
-parser.add_argument('--train-split', metavar='NAME', default='train',
-                    help='dataset train split (default: train)')
-parser.add_argument('--val-split', metavar='NAME', default='validation',
-                    help='dataset validation split (default: validation)')
+# parser.add_argument('data_dir', metavar='DIR', default='/home/ubuntu/efs/ARR/HistFigsClass8-rgb', type=str,
+#                     help='path to dataset')
+# parser.add_argument('--dataset', '-d', metavar='NAME', default='',
+#                     help='dataset type (default: ImageFolder/ImageTar if empty)')
+# parser.add_argument('--train-split', metavar='NAME', default='train',
+#                     help='dataset train split (default: train)')
+# parser.add_argument('--val-split', metavar='NAME', default='validation',
+#                     help='dataset validation split (default: validation)')
 parser.add_argument('--model', default='resnet50', type=str, metavar='MODEL',
                     help='Name of model to train (default: "resnet50"')
 parser.add_argument('--pretrained', action='store_true', default=False,
@@ -378,10 +389,10 @@ def main():
         bn_eps=args.bn_eps,
         scriptable=args.torchscript,
         checkpoint_path=args.initial_checkpoint)
-    print("model:", model)
+    # print("model:", model)
     model = torch.nn.Sequential(*(list(model.children())[:-1]))
     model.fc = torch.nn.Linear(in_features=1536, out_features=8, bias=True)
-    print(model)
+    # print(model)
     # print(model.fc)
     # print(model.classifier[25])
     # model.classifier[25].out_features = 10
@@ -496,15 +507,22 @@ def main():
         _logger.info('Scheduled epochs: {}'.format(num_epochs))
 
     # create the train and eval datasets
-    print("args.dataset:", args.dataset)
-    print("args.data_dir:", args.data_dir)
-    dataset_train = create_dataset(
-        args.dataset,
-        root=args.data_dir, split=args.train_split, is_training=True,
-        batch_size=args.batch_size, repeats=args.epoch_repeats)
-    dataset_eval = create_dataset(
-        args.dataset, root=args.data_dir, split=args.val_split, is_training=False, batch_size=args.batch_size)
 
+    # dataset_train = create_dataset_historical(
+    #     args.dataset,
+    #     root=args.data_dir, split=args.train_split, is_training=True,
+    #     batch_size=args.batch_size, repeats=args.epoch_repeats)
+    # dataset_eval = create_dataset_historical(
+    #     args.dataset, root=args.data_dir, split=args.val_split, is_training=False, batch_size=args.batch_size)
+    ds_train = create_dataset_historical("/home/etanfar/Documents/DATA/np-DATA", "train", is_training=True,
+        batch_size=args.batch_size)
+    ds_eval = create_dataset_historical("/home/etanfar/Documents/DATA/np-DATA", "validation", is_training=False, 
+                                             batch_size=args.batch_size)
+
+
+    # for i in range(0, 5000, 69):
+    #     print("dataset_train:", dataset_train[i])
+    #     print("dataset_eval:", dataset_eval[i])
     # setup mixup / cutmix
     collate_fn = None
     mixup_fn = None
@@ -529,7 +547,7 @@ def main():
     if args.no_aug or not train_interpolation:
         train_interpolation = data_config['interpolation']
     loader_train = create_loader(
-        dataset_train,
+        ds_train,
         input_size=data_config['input_size'],
         batch_size=args.batch_size,
         is_training=True,
@@ -559,7 +577,7 @@ def main():
     )
 
     loader_eval = create_loader(
-        dataset_eval,
+        ds_eval,
         input_size=data_config['input_size'],
         batch_size=args.validation_batch_size or args.batch_size,
         is_training=False,
@@ -682,6 +700,7 @@ def train_one_epoch(
     last_idx = len(loader) - 1
     num_updates = epoch * len(loader)
     for batch_idx, (input, target) in enumerate(loader):
+        # print(target)
         last_batch = batch_idx == last_idx
         data_time_m.update(time.time() - end)
 

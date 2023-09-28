@@ -3,7 +3,7 @@ amp: true
 apex_amp: false
 aug_repeats: 0
 aug_splits: 0
-batch_size: 32
+batch_size: 8
 bce_loss: false
 bce_target_thresh: null
 bn_eps: null
@@ -18,8 +18,6 @@ cooldown_epochs: 10
 crop_pct: null
 cutmix: 0.0
 cutmix_minmax: null
-data_dir: /home/etanfar/Documents/DATA/
-dataset: ''
 decay_epochs: 3
 decay_rate: 0.1
 dist_bn: reduce
@@ -37,8 +35,8 @@ img_size: null
 initial_checkpoint: ''
 input_size:
 - 3
-- 274
-- 274
+- 574
+- 574
 interpolation: ''
 jsd_loss: false
 local_rank: 0
@@ -99,10 +97,8 @@ std: null
 sync_bn: false
 torchscript: false
 train_interpolation: random
-train_split: /home/etanfar/Documents/DATA/np-DATA/HistFigsClass8-rgb-train
 tta: 0
 use_multi_epochs_loader: false
-val_split: /home/etanfar/Documents/DATA/np-DATA/HistFigsClass8-rgb-train
 validation_batch_size: null
 vflip: 0.0
 warmup_epochs: 0

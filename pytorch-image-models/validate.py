@@ -23,6 +23,8 @@ from timm.models import create_model, apply_test_time_pool, load_checkpoint, is_
 from timm.data import create_dataset, create_loader, resolve_data_config, RealLabelsImagenet
 from timm.utils import accuracy, AverageMeter, natural_key, setup_default_logging, set_jit_legacy
 
+from utils.help import create_dataset_historical, LandmarkDataset
+
 has_apex = False
 try:
     from apex import amp
@@ -42,12 +44,15 @@ _logger = logging.getLogger('validate')
 
 
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Validation')
-parser.add_argument('data', metavar='DIR',
-                    help='path to dataset')
-parser.add_argument('--dataset', '-d', metavar='NAME', default='',
-                    help='dataset type (default: ImageFolder/ImageTar if empty)')
-parser.add_argument('--split', metavar='NAME', default='validation',
-                    help='dataset split (default: validation)')
+# parser.add_argument('data', metavar='DIR',
+#                     help='path to dataset')
+# parser.add_argument('--dataset', '-d', metavar='NAME', default='',
+#                     help='dataset type (default: ImageFolder/ImageTar if empty)')
+# parser.add_argument('--split', metavar='NAME', default='validation',
+#                     help='dataset split (default: validation)')
+
+# parser.add_argument('--checkpoint-dir', default='', type=str, metavar='PATH', required=True,
+#                     help='path to latest checkpoint (default: none)')
 parser.add_argument('--model', '-m', metavar='NAME', default='dpn92',
                     help='model architecture (default: dpn92)')
 parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
@@ -135,23 +140,50 @@ def validate(args):
         set_jit_legacy()
 
     # create model
-    model = create_model(
-        args.model,
-        pretrained=args.pretrained,
-        num_classes=args.num_classes,
-        in_chans=3,
-        global_pool=args.gp,
-        scriptable=args.torchscript)
+    # model = create_model(
+    #     args.model,
+    #     pretrained=args.pretrained,
+    #     num_classes=args.num_classes,
+    #     in_chans=3,
+    #     global_pool=args.gp,
+    #     scriptable=args.torchscript)
+    # print(args.model)
+
+    # checkpoint = torch.load("/home/etanfar/Documents/convmixer/pytorch-image-models/output/train/20230926-191300-convmixer_1536_20-274")
+    model = create_model("convmixer_1536_20", pretrained=False, num_classes=1000)
+    # print(model)
+    model = torch.nn.Sequential(*(list(model.children())[:-1]))
+    model.fc = torch.nn.Linear(in_features=1536, out_features=8, bias=True)
+    print("args.checkpoint:", args.checkpoint)
+    checkpoint = torch.load(f"/home/etanfar/Documents/convmixer/pytorch-image-models/output/train/{args.checkpoint}/model_best.pth.tar")
+    # print(checkpoint)
+    model.load_state_dict(checkpoint['state_dict'])
+    # model = create_model(
+    #     args.model,
+    #     pretrained=args.pretrained,
+    #     num_classes=args.num_classes,
+    #     # drop_rate=args.drop,
+    #     # drop_connect_rate=args.drop_connect,  # DEPRECATED, use drop_path
+    #     # drop_path_rate=args.drop_path,
+    #     # drop_block_rate=args.drop_block,
+    #     global_pool=args.gp,
+    #     # bn_tf=args.bn_tf,
+    #     # bn_momentum=args.bn_momentum,
+    #     # bn_eps=args.bn_eps,
+    #     scriptable=args.torchscript,
+    #     # checkpoint_path=args.initial_checkpoint
+    #     )
+    
     if args.num_classes is None:
         assert hasattr(model, 'num_classes'), 'Model must have `num_classes` attr if not set on cmd line/config.'
         args.num_classes = model.num_classes
 
     ## Change the number of output classes
-    model = torch.nn.Sequential(*(list(model.children())[:-1]))
-    model.fc = torch.nn.Linear(in_features=1536, out_features=8, bias=True)
+    # model = torch.nn.Sequential(*(list(model.children())[:-1]))
+    # model.fc = torch.nn.Linear(in_features=1536, out_features=8, bias=True)
 
-    if args.checkpoint:
-        load_checkpoint(model, args.checkpoint, args.use_ema)
+    # if args.checkpoint:
+    #     load_checkpoint(model, args.checkpoint, args.use_ema)
 
     param_count = sum([m.numel() for m in model.parameters()])
     _logger.info('Model %s created, param count: %d' % (args.model, param_count))
@@ -177,9 +209,13 @@ def validate(args):
 
     criterion = nn.CrossEntropyLoss().cuda()
 
-    dataset = create_dataset(
-        root=args.data, name=args.dataset, split=args.split,
-        load_bytes=args.tf_preprocessing, class_map=args.class_map)
+    # dataset = create_dataset(
+    #     root=args.data, name=args.dataset, split=args.split,
+    #     load_bytes=args.tf_preprocessing, class_map=args.class_map)
+    ds_train = create_dataset_historical("/home/etanfar/Documents/DATA/np-DATA", "train", is_training=True,
+        batch_size=args.batch_size)
+    ds_eval = create_dataset_historical("/home/etanfar/Documents/DATA/np-DATA", "validation", is_training=False, 
+                                             batch_size=args.batch_size)
 
     if args.valid_labels:
         with open(args.valid_labels, 'r') as f:
@@ -189,13 +225,13 @@ def validate(args):
         valid_labels = None
 
     if args.real_labels:
-        real_labels = RealLabelsImagenet(dataset.filenames(basename=True), real_json=args.real_labels)
+        real_labels = RealLabelsImagenet(ds_eval.filenames(basename=True), real_json=args.real_labels)
     else:
         real_labels = None
 
     crop_pct = 1.0 if test_time_pool else data_config['crop_pct']
     loader = create_loader(
-        dataset,
+        ds_eval,
         input_size=data_config['input_size'],
         batch_size=args.batch_size,
         use_prefetcher=args.prefetcher,
@@ -231,13 +267,16 @@ def validate(args):
             with amp_autocast():
                 output = model(input)
 
+            print("batch output:", output)
+            
             if valid_labels is not None:
                 output = output[:, valid_labels]
             loss = criterion(output, target)
-
+            
             if real_labels is not None:
                 real_labels.add_result(output)
 
+            print("real labels:", output)
             # measure accuracy and record loss
             acc1, acc5 = accuracy(output.detach(), target, topk=(1, 5))
             losses.update(loss.item(), input.size(0))
@@ -323,6 +362,7 @@ def main():
                         args.batch_size = batch_size
                         print('Validating with batch size: %d' % args.batch_size)
                         r = validate(args)
+                        # print('Validation result: {}'.format(r))
                     except RuntimeError as e:
                         if batch_size <= args.num_gpu:
                             print("Validation failed with no ability to reduce batch size. Exiting.")
