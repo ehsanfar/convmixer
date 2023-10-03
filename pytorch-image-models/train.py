@@ -391,7 +391,7 @@ def main():
         checkpoint_path=args.initial_checkpoint)
     # print("model:", model)
     model = torch.nn.Sequential(*(list(model.children())[:-1]))
-    model.fc = torch.nn.Linear(in_features=1536, out_features=8, bias=True)
+    model.fc = torch.nn.Linear(in_features=1536, out_features=1, bias=True)
     # print(model)
     # print(model.fc)
     # print(model.classifier[25])
@@ -608,8 +608,11 @@ def main():
             train_loss_fn = LabelSmoothingCrossEntropy(smoothing=args.smoothing)
     else:
         train_loss_fn = nn.CrossEntropyLoss()
+    
+    train_loss_fn = nn.MSELoss()
     train_loss_fn = train_loss_fn.cuda()
-    validate_loss_fn = nn.CrossEntropyLoss().cuda()
+    # validate_loss_fn = nn.CrossEntropyLoss().cuda()
+    validate_loss_fn = nn.MSELoss()
 
     # setup checkpoint saver and eval metric tracking
     eval_metric = args.eval_metric

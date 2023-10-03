@@ -8,23 +8,29 @@ canonical PyTorch, standard Python style, and good performance. Repurpose as you
 Hacked together by Ross Wightman (https://github.com/rwightman)
 """
 import argparse
+import json
 import os
 import csv
 import glob
 import time
 import logging
+import numpy as np 
+import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.parallel
 from collections import OrderedDict
 from contextlib import suppress
+from sklearn.metrics import confusion_matrix
+from matplotlib import pyplot as plt
 
 from timm.models import create_model, apply_test_time_pool, load_checkpoint, is_model, list_models
 from timm.data import create_dataset, create_loader, resolve_data_config, RealLabelsImagenet
 from timm.utils import accuracy, AverageMeter, natural_key, setup_default_logging, set_jit_legacy
+from timm.data import ImageDataset, IterableImageDataset, AugMixDataset, create_loader
 
-from utils.help import create_dataset_historical, LandmarkDataset
-
+from utils.help import create_dataset_historical, LandmarkDataset, force_cudnn_initialization
+from itertools import islice
 has_apex = False
 try:
     from apex import amp
@@ -42,6 +48,7 @@ except AttributeError:
 torch.backends.cudnn.benchmark = True
 _logger = logging.getLogger('validate')
 
+force_cudnn_initialization()
 
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Validation')
 # parser.add_argument('data', metavar='DIR',
@@ -117,6 +124,8 @@ parser.add_argument('--valid-labels', default='', type=str, metavar='FILENAME',
 
 def validate(args):
     # might as well try to validate something
+    if not os.path.isdir(f'results/{args.checkpoint}'): 
+        os.mkdir(f'results/{args.checkpoint}')
     args.pretrained = args.pretrained or not args.checkpoint
     args.prefetcher = not args.no_prefetcher
     amp_autocast = suppress  # do nothing
@@ -212,10 +221,11 @@ def validate(args):
     # dataset = create_dataset(
     #     root=args.data, name=args.dataset, split=args.split,
     #     load_bytes=args.tf_preprocessing, class_map=args.class_map)
-    ds_train = create_dataset_historical("/home/etanfar/Documents/DATA/np-DATA", "train", is_training=True,
-        batch_size=args.batch_size)
-    ds_eval = create_dataset_historical("/home/etanfar/Documents/DATA/np-DATA", "validation", is_training=False, 
-                                             batch_size=args.batch_size)
+    # ds_train = create_dataset_historical("/home/etanfar/Documents/DATA/np-DATA", "train", is_training=True,
+    #     batch_size=args.batch_size)
+    path = os.path.join("/home/etanfar/Documents/DATA/np-DATA", 'HistFigsClass8-rgb-train')
+    ds_eval = ImageDataset(path, parser='pil')
+    file_count = sum([len(os.listdir(os.path.join(path, str(c)))) for c in range(8)])
 
     if args.valid_labels:
         with open(args.valid_labels, 'r') as f:
@@ -249,6 +259,11 @@ def validate(args):
     top5 = AverageMeter()
 
     model.eval()
+    classes_predictions = np.empty((file_count, 2 + 8))
+    classes_predictions[:, :] = np.nan
+    # print(classes_predictions.shape)
+    # classes = np.zeros(file_count)
+    i = 0 
     with torch.no_grad():
         # warmup, reduce variability of first batch time, especially for comparing torchscript vs non
         input = torch.randn((args.batch_size,) + tuple(data_config['input_size'])).cuda()
@@ -256,6 +271,8 @@ def validate(args):
             input = input.contiguous(memory_format=torch.channels_last)
         model(input)
         end = time.time()
+        plt.figure()
+
         for batch_idx, (input, target) in enumerate(loader):
             if args.no_prefetcher:
                 target = target.cuda()
@@ -267,7 +284,7 @@ def validate(args):
             with amp_autocast():
                 output = model(input)
 
-            print("batch output:", output)
+            # print("batch output:", output)
             
             if valid_labels is not None:
                 output = output[:, valid_labels]
@@ -276,7 +293,18 @@ def validate(args):
             if real_labels is not None:
                 real_labels.add_result(output)
 
-            print("real labels:", output)
+            # print("real labels:", output)
+            out = np.round(output.cpu().numpy(), 4)
+            # print(out)
+            n = out.shape[0]
+            # print(n)
+            classes_predictions[i:i+n, 1] = out.argmax(axis = 1)
+            classes_predictions[i:i+n, 0] = target.cpu().numpy()
+            classes_predictions[i:i+n, 2:] = out
+            i += n
+
+            # print(predictions)
+            # print(classes)
             # measure accuracy and record loss
             acc1, acc5 = accuracy(output.detach(), target, topk=(1, 5))
             losses.update(loss.item(), input.size(0))
@@ -314,10 +342,24 @@ def validate(args):
     _logger.info(' * Acc@1 {:.3f} ({:.3f}) Acc@5 {:.3f} ({:.3f})'.format(
        results['top1'], results['top1_err'], results['top5'], results['top5_err']))
 
+    # print(classes)
+    # print(predictions)
+    results_file = args.results_file or f'results/{args.checkpoint}/results-all.csv'
+    predictions_file = args.results_file or f'results/{args.checkpoint}/labels_predictions.csv'
+
+    # with open(f'results/{args.checkpoint}/results-all.json', 'w') as f: 
+    #     json.dump(f, results)
+    
+
+    pd.DataFrame(classes_predictions, columns = ["class", 'pred'] + [str(c) for c in range(8)]).to_csv(predictions_file)
+    # with open('')
+    # write_results(results_file, results)
+    # write_results(predictions_file, list(zip(classes, predictions)))
     return results
 
 
 def main():
+    plt.figure()
     setup_default_logging()
     args = parser.parse_args()
     model_cfgs = []
@@ -344,10 +386,14 @@ def main():
                 model_names = [line.rstrip() for line in f]
             model_cfgs = [(n, None) for n in model_names if n]
 
-    if len(model_cfgs):
-        results_file = args.results_file or './results-all.csv'
+    print("model_cfgs:", model_cfgs)
+    if False:#len(model_cfgs):
+        results_file = args.results_file or f'results/{args.checkpoint}/results-all.csv'
+        predictions_file = args.results_file or f'results/{args.checkpoint}/predictions-all.csv'
         _logger.info('Running bulk validation on these pretrained models: {}'.format(', '.join(model_names)))
         results = []
+        pred_classes = []
+        real_classes = []
         try:
             start_batch_size = args.batch_size
             for m, c in model_cfgs:
@@ -361,7 +407,12 @@ def main():
                     try:
                         args.batch_size = batch_size
                         print('Validating with batch size: %d' % args.batch_size)
-                        r = validate(args)
+                        r, classes, preds = validate(args)
+                        pred_classes.extend(preds)
+                        real_classes.extend(classes)
+                        confusion_matrix(classes, preds)
+                        plt.savefig(f'results/{args.checkpoint}/confusion_matrix.png')
+
                         # print('Validation result: {}'.format(r))
                     except RuntimeError as e:
                         if batch_size <= args.num_gpu:
@@ -377,9 +428,15 @@ def main():
             pass
         results = sorted(results, key=lambda x: x['top1'], reverse=True)
         if len(results):
+            confusion_matrix(real_classes, predictions_file)
+            plt.savefig(f'results/{args.checkpoint}/confusion_matrix.png')
             write_results(results_file, results)
+            write_results(predictions_file, list(zip(real_classes, pred_classes)))
+            
     else:
         validate(args)
+
+
 
 
 def write_results(results_file, results):

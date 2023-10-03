@@ -1,9 +1,9 @@
 import os
 import re
 import cv2
+import torch
 from torch.utils.data import Dataset, DataLoader
 from timm.data import ImageDataset, IterableImageDataset, AugMixDataset, create_loader
-
 
 
 class LandmarkDataset(Dataset):
@@ -48,3 +48,8 @@ def create_dataset_historical(path, split, is_training=False, batch_size=None, *
     #     dataset, batch_size=batch_size, shuffle=True
     # )
     return ds
+
+def force_cudnn_initialization():
+    s = 32
+    dev = torch.device('cuda')
+    torch.nn.functional.conv2d(torch.zeros(s, s, s, s, device=dev), torch.zeros(s, s, s, s, device=dev))
